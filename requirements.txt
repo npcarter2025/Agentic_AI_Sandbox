@@ -1,0 +1,26 @@
+# Core RAG and Vector Database
+chromadb>=0.4.0
+langchain-chroma>=0.1.0
+langchain-huggingface>=0.0.1
+langchain-openai>=0.1.0
+langchain-ollama>=0.1.0
+langchain-text-splitters>=0.2.0
+langchain-classic>=0.1.0
+langchain-core>=0.2.0
+
+# Speech Recognition (for voice input mode)
+vosk>=0.3.45
+sounddevice>=0.4.6
+pynput>=1.7.6
+
+# Translation (for speech-to-text translation scripts)
+transformers>=4.30.0
+torch>=2.0.0  # Required by transformers
+
+# Environment Variables
+python-dotenv>=1.0.0
+
+# Optional but recommended for better performance
+numpy>=1.24.0
+sentence-transformers>=2.2.0  # Used by HuggingFaceEmbeddings
+
