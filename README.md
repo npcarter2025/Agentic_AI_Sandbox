@@ -1,6 +1,12 @@
 # Agentic AI Sandbox
 
-A collection of tools for speech-to-text processing and RAG (Retrieval-Augmented Generation) systems.
+This repo is a collection of AI tools that I've been working on for speech-to-text processing and RAG (Retrieval-Augmented Generation) systems.
+From high-quality to low-quality, you'll find a mix of things that I've been tinkering with.
+Everything is functional, but still work in progress.
+
+Ultimately I'm trying to build a Front-end CLI Interface to run local LLM models for general conversations and rapid documentation. 
+I've also made versions that embed your documents into a vector database, for better LLM contextualization.
+I also have a model that will allow you to connect to Ollama, Open Router, or OpenAI.
 
 ## Projects
 
