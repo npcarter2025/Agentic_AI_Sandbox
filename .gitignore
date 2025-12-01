@@ -60,7 +60,7 @@ chroma_db/
 *.backup
 
 # Documents (user data - uncomment if you want to ignore)
-# documents/*
+documents/*
 
 # Jupyter Notebook
 .ipynb_checkpoints
