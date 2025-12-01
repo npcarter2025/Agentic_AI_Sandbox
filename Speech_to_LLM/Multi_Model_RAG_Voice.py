@@ -769,6 +769,7 @@ class IntegratedRAG:
             print(f"\n⚠️  No new or changed files found at '{self.documents_path}'")
             if incremental:
                 print(f"   (Use --reindex to force full reindex)")
+            print(f"   Continuing anyway - you can still ask general questions")
             return [], []
         
         print(f"\n✅ Loaded {len(documents)} chunk(s) from {len(file_paths)} file(s)")
@@ -816,6 +817,19 @@ class IntegratedRAG:
         # Load and process documents
         documents, _ = self.load_documents(incremental=False if force_reindex else incremental)
         if not documents:
+            # No documents found, but continue anyway - create empty vectorstore for general knowledge mode
+            print("⚠️  No documents found, but continuing in general knowledge mode...")
+            print("   (You can still ask questions, and add documents later)")
+            # Create an empty vectorstore so the system can still work
+            try:
+                self.vectorstore = Chroma(
+                    persist_directory=persist_directory,
+                    embedding_function=self.embeddings,
+                    collection_name=self.collection_name
+                )
+                print("✅ Initialized empty vector store (ready for documents)")
+            except Exception as e:
+                print(f"⚠️  Could not initialize vector store: {e}")
             return
         
         # Create vector store
@@ -831,8 +845,10 @@ class IntegratedRAG:
     def setup_qa_chain(self, retry_count: int = 3):
         """Set up the question-answering chain with retry logic."""
         if not self.vectorstore:
-            print("❌ Vector store not initialized. Please index documents first.")
-            return
+            print("⚠️  No vector store available. Setting up in general knowledge mode...")
+            print("   (You can ask general questions, but document-based queries won't work)")
+            # We'll still set up the LLM for direct questions
+            # But we'll handle the QA chain differently
         
         # Initialize LLM
         if self.use_openrouter:
@@ -885,21 +901,28 @@ class IntegratedRAG:
                 print(f"   And that model '{self.ollama_model}' is available: 'ollama list'")
                 return
         
-        # Create QA chain with metadata filtering support
-        retriever = self.vectorstore.as_retriever(
-            search_kwargs={"k": 5}  # Get more results for better context
-        )
-        
-        self.qa_chain = ConversationalRetrievalChain.from_llm(
-            llm=llm,
-            retriever=retriever,
-            memory=self.memory,
-            return_source_documents=True,
-            verbose=False
-        )
+        # Store LLM for use
         self.retry_count = retry_count
-        self.llm = llm  # Store LLM for fallback
-        print("✅ QA chain ready")
+        self.llm = llm
+        
+        # Create QA chain with metadata filtering support (if vectorstore exists)
+        if self.vectorstore:
+            retriever = self.vectorstore.as_retriever(
+                search_kwargs={"k": 5}  # Get more results for better context
+            )
+            
+            self.qa_chain = ConversationalRetrievalChain.from_llm(
+                llm=llm,
+                retriever=retriever,
+                memory=self.memory,
+                return_source_documents=True,
+                verbose=False
+            )
+            print("✅ QA chain ready (with document retrieval)")
+        else:
+            # No vectorstore - we'll use direct LLM calls in ask() method
+            self.qa_chain = None
+            print("✅ LLM ready (general knowledge mode - no documents indexed)")
     
     def _extract_file_references(self, question: str) -> List[Path]:
         """
@@ -966,8 +989,56 @@ class IntegratedRAG:
             question: The question to ask
             filter_metadata: Optional metadata filter (e.g., {"file_name": "utils.py"}, {"language": "typescript"})
         """
+        # If no QA chain (no documents), use direct LLM
         if not self.qa_chain:
-            return "❌ QA chain not set up. Please index documents first."
+            if not self.llm:
+                return "❌ LLM not set up. Please check your configuration."
+            
+            # Direct LLM mode (no RAG)
+            print("   💡 General knowledge mode (no documents indexed)")
+            try:
+                if self.use_openai or self.use_openrouter:
+                    provider = "OpenRouter" if self.use_openrouter else "OpenAI"
+                    print(f"   🔄 Querying {provider} API...")
+                
+                # Check for file references even without vectorstore
+                file_refs = self._extract_file_references(question)
+                enhanced_question = question
+                
+                if file_refs:
+                    file_contents = []
+                    for file_path in file_refs:
+                        content = self._read_file_content(file_path)
+                        if content:
+                            language = self.get_language_from_extension(file_path)
+                            file_contents.append(f"\n\n--- Content of {file_path.name} ({language}) ---\n{content}\n--- End of {file_path.name} ---")
+                    
+                    if file_contents:
+                        enhanced_question = question + "\n\n" + "\n".join(file_contents)
+                        print(f"   📄 Including content from: {', '.join([f.name for f in file_refs])}")
+                
+                # Use conversation history if available
+                if hasattr(self.memory, 'chat_memory') and hasattr(self.memory.chat_memory, 'messages') and self.memory.chat_memory.messages:
+                    # Build context from conversation history
+                    context = ""
+                    for msg in self.memory.chat_memory.messages[-4:]:  # Last 4 messages for context
+                        if hasattr(msg, 'content'):
+                            msg_type = "Human" if msg.__class__.__name__ == 'HumanMessage' else "Assistant"
+                            context += f"{msg_type}: {msg.content}\n"
+                    
+                    if context:
+                        enhanced_question = f"{context}\n\nHuman: {enhanced_question}\n\nAssistant:"
+                
+                response = self.llm.invoke(enhanced_question)
+                answer = response.content if hasattr(response, 'content') else str(response)
+                
+                # Update memory
+                self.memory.chat_memory.add_user_message(question)
+                self.memory.chat_memory.add_ai_message(answer)
+                
+                return answer
+            except Exception as e:
+                return f"❌ Error: {e}"
         
         # Check for file references in the question
         file_refs = self._extract_file_references(question)
@@ -1201,8 +1272,8 @@ Please answer the user's question using the current date/time information provid
         Uses the LLM to generate the edit, then applies it with diff preview.
         Supports all file types.
         """
-        if not self.qa_chain:
-            return False, "❌ QA chain not set up. Please index documents first."
+        if not self.llm:
+            return False, "❌ LLM not set up. Please check your configuration."
         
         # Read the file
         try:
@@ -1240,8 +1311,14 @@ Return ONLY the complete edited code in a markdown code block:
 Do not include explanations. Only return the code block."""
         
         try:
-            result = self.qa_chain.invoke({"question": prompt})
-            answer = result["answer"]
+            # Use LLM directly (works with or without QA chain)
+            if self.qa_chain:
+                result = self.qa_chain.invoke({"question": prompt})
+                answer = result["answer"]
+            else:
+                # Direct LLM call for file editing
+                response = self.llm.invoke(prompt)
+                answer = response.content if hasattr(response, 'content') else str(response)
             
             # Extract code block
             code_blocks = self.extract_code_blocks(answer)
@@ -1408,9 +1485,14 @@ Do not include explanations. Only return the code block."""
     
     def chat(self):
         """Start an interactive chat session with inline editing capabilities."""
-        if not self.qa_chain:
-            print("❌ QA chain not set up. Please index documents first.")
+        if not self.qa_chain and not self.llm:
+            print("❌ LLM not set up. Please check your configuration.")
             return
+        
+        if not self.qa_chain:
+            print("⚠️  Running in general knowledge mode (no documents indexed)")
+            print("   You can still ask questions, and add documents later using --reindex")
+            print()
         
         # Initialize log file with session header
         if self.log_file:
@@ -1559,6 +1641,14 @@ Do not include explanations. Only return the code block."""
                         new_docs, _ = self.load_documents(incremental=True)
                         if new_docs and self.vectorstore:
                             self.vectorstore.add_documents(new_docs)
+                            
+                            # Refresh QA chain to pick up updated documents
+                            if self.qa_chain and self.llm:
+                                retriever = self.vectorstore.as_retriever(
+                                    search_kwargs={"k": 5}
+                                )
+                                self.qa_chain.retriever = retriever
+                            
                             print("✅ File reindexed")
                     
                     print()
@@ -1700,7 +1790,56 @@ Do not include explanations. Only return the code block."""
                                                 # Update file hash
                                                 self.file_hashes[str(file_path)] = self.get_file_hash(file_path)
                                                 self.save_file_hashes()
+                                                
+                                                # Refresh QA chain to pick up new documents
+                                                if self.qa_chain and self.llm:
+                                                    retriever = self.vectorstore.as_retriever(
+                                                        search_kwargs={"k": 5}
+                                                    )
+                                                    self.qa_chain.retriever = retriever
+                                                
                                                 print(f"   ✅ File indexed and ready to use!\n")
+                                            else:
+                                                print(f"   ⚠️  Could not create chunks for indexing\n")
+                                        except Exception as e:
+                                            print(f"   ⚠️  Could not auto-index file: {e}\n")
+                                    elif self.llm:
+                                        # No vectorstore yet, but we have LLM - create vectorstore and QA chain
+                                        print("   🔄 Creating vectorstore and indexing file...")
+                                        try:
+                                            language = self.get_language_from_extension(file_path)
+                                            if language == 'python':
+                                                chunks = self.parse_python_file(file_path, code)
+                                            else:
+                                                chunks = self.parse_code_file(file_path, code)
+                                            
+                                            if chunks:
+                                                # Create vectorstore if it doesn't exist
+                                                persist_directory = "./chroma_db"
+                                                self.vectorstore = Chroma.from_documents(
+                                                    documents=chunks,
+                                                    embedding=self.embeddings,
+                                                    persist_directory=persist_directory,
+                                                    collection_name=self.collection_name
+                                                )
+                                                
+                                                # Update file hash
+                                                self.file_hashes[str(file_path)] = self.get_file_hash(file_path)
+                                                self.save_file_hashes()
+                                                
+                                                # Create QA chain now that we have a vectorstore
+                                                retriever = self.vectorstore.as_retriever(
+                                                    search_kwargs={"k": 5}
+                                                )
+                                                self.qa_chain = ConversationalRetrievalChain.from_llm(
+                                                    llm=self.llm,
+                                                    retriever=retriever,
+                                                    memory=self.memory,
+                                                    return_source_documents=True,
+                                                    verbose=False
+                                                )
+                                                
+                                                print(f"   ✅ File indexed and QA chain created!\n")
                                             else:
                                                 print(f"   ⚠️  Could not create chunks for indexing\n")
                                         except Exception as e:
