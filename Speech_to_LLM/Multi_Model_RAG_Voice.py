@@ -1787,6 +1787,116 @@ Do not include explanations. Only return the code block."""
                 # Don't break - continue the loop so user can keep chatting
 
 
+def interactive_menu():
+    """Interactive menu for configuring RAG system options."""
+    print("\n" + "="*70)
+    print("🔧 Interactive Configuration Menu")
+    print("="*70)
+    print("Press Enter to use defaults (shown in brackets)")
+    print()
+    
+    config = {}
+    
+    # Documents path
+    print("📁 Documents Path")
+    print("   Path to a file or directory containing files to index")
+    default_docs = "documents"
+    docs_input = input(f"   Documents path [{default_docs}]: ").strip()
+    config['documents'] = docs_input if docs_input else default_docs
+    
+    # LLM Provider
+    print("\n🤖 LLM Provider")
+    print("   1. Ollama (local, free)")
+    print("   2. OpenAI (cloud, requires API key)")
+    print("   3. OpenRouter (cloud, access multiple models)")
+    provider_choice = input("   Choose provider [1]: ").strip()
+    if not provider_choice:
+        provider_choice = "1"
+    
+    config['use_openai'] = False
+    config['use_openrouter'] = False
+    
+    if provider_choice == "2":
+        config['use_openai'] = True
+        print("\n   OpenAI Model")
+        default_openai = "gpt-4o-mini"
+        openai_model = input(f"   Model name [{default_openai}]: ").strip()
+        config['openai_model'] = openai_model if openai_model else default_openai
+        config['ollama_model'] = "gemma3:1b"  # Not used but set for consistency
+        config['openrouter_model'] = "openai/gpt-3.5-turbo"  # Not used
+    elif provider_choice == "3":
+        config['use_openrouter'] = True
+        print("\n   OpenRouter Model")
+        default_openrouter = "openai/gpt-3.5-turbo"
+        openrouter_model = input(f"   Model name [{default_openrouter}]: ").strip()
+        config['openrouter_model'] = openrouter_model if openrouter_model else default_openrouter
+        config['ollama_model'] = "gemma3:1b"  # Not used
+        config['openai_model'] = "gpt-3.5-turbo"  # Not used
+    else:
+        print("\n   Ollama Model")
+        default_ollama = "gemma3:1b"
+        ollama_model = input(f"   Model name [{default_ollama}]: ").strip()
+        config['ollama_model'] = ollama_model if ollama_model else default_ollama
+        config['openai_model'] = "gpt-3.5-turbo"  # Not used
+        config['openrouter_model'] = "openai/gpt-3.5-turbo"  # Not used
+    
+    # Indexing options
+    print("\n📚 Indexing Options")
+    reindex = input("   Force full reindex? [n]: ").strip().lower()
+    config['reindex'] = reindex in ['y', 'yes', '1', 'true']
+    
+    no_incremental = input("   Disable incremental indexing? [n]: ").strip().lower()
+    config['no_incremental'] = no_incremental in ['y', 'yes', '1', 'true']
+    
+    # Collection name
+    print("\n🗂️  Collection Name")
+    default_collection = "default"
+    collection = input(f"   ChromaDB collection name [{default_collection}]: ").strip()
+    config['collection'] = collection if collection else default_collection
+    
+    # Log file
+    print("\n📝 Logging")
+    default_log = ".rag_conversation.log"
+    log_file = input(f"   Log file path [{default_log}] (or 'none' to disable): ").strip()
+    config['log_file'] = log_file if log_file else default_log
+    
+    # Tokenizer options
+    print("\n✂️  Chunking Options")
+    print("   Tokenizer: 1=Auto-detect, 2=Force token-based, 3=Force character-based")
+    tokenizer_choice = input("   Tokenizer option [1]: ").strip()
+    if not tokenizer_choice:
+        tokenizer_choice = "1"
+    
+    if tokenizer_choice == "2":
+        config['use_tokenizer'] = True
+        config['no_tokenizer'] = False
+    elif tokenizer_choice == "3":
+        config['use_tokenizer'] = False
+        config['no_tokenizer'] = True
+    else:
+        config['use_tokenizer'] = None
+        config['no_tokenizer'] = False
+    
+    # Chunk size
+    chunk_size = input("   Chunk size [1000] (or Enter for default): ").strip()
+    config['chunk_size'] = int(chunk_size) if chunk_size else None
+    
+    # Chunk overlap
+    chunk_overlap = input("   Chunk overlap [200] (or Enter for default): ").strip()
+    config['chunk_overlap'] = int(chunk_overlap) if chunk_overlap else None
+    
+    # Voice input
+    print("\n🎤 Voice Input")
+    voice = input("   Enable voice input mode? [n]: ").strip().lower()
+    config['use_voice_input'] = voice in ['y', 'yes', '1', 'true']
+    
+    print("\n" + "="*70)
+    print("✅ Configuration complete!")
+    print("="*70 + "\n")
+    
+    return config
+
+
 def main():
     """Main entry point."""
     import argparse
@@ -1795,9 +1905,15 @@ def main():
         description="Integrated RAG CLI - RAG with support for all file types"
     )
     parser.add_argument(
+        "--interactive",
+        "-i",
+        action="store_true",
+        help="Show interactive configuration menu"
+    )
+    parser.add_argument(
         "--documents",
         type=str,
-        default="documents",
+        default=None,
         help="Path to a file or directory containing files of any supported type (default: 'documents')"
     )
     parser.add_argument(
@@ -1823,34 +1939,34 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="gemma3:1b",
+        default=None,
         help="Ollama model name (default: 'gemma3:1b'). Examples: gemma3:1b, llama3.1:latest, mistral, qwen2.5"
     )
     parser.add_argument(
         "--openai-model",
         type=str,
         dest="openai_model",
-        default="gpt-3.5-turbo",
+        default=None,
         help="OpenAI model name (default: 'gpt-3.5-turbo'). Cheaper options: 'gpt-4o-mini' (cheapest), 'gpt-3.5-turbo'"
     )
     parser.add_argument(
         "--openrouter-model",
         type=str,
         dest="openrouter_model",
-        default="openai/gpt-3.5-turbo",
+        default=None,
         help="OpenRouter model name (default: 'openai/gpt-3.5-turbo'). Examples: 'openai/gpt-4o-mini', 'anthropic/claude-3-haiku', 'google/gemini-pro', 'meta-llama/llama-3.1-8b-instruct'. See https://openrouter.ai/models"
     )
     parser.add_argument(
         "--collection",
         type=str,
-        default="default",
+        default=None,
         help="ChromaDB collection name (allows multiple indexes, default: 'default')"
     )
     parser.add_argument(
         "--log-file",
         type=str,
         dest="log_file",
-        default=".rag_conversation.log",
+        default=None,
         help="Path to conversation log file (default: '.rag_conversation.log', use 'none' to disable)"
     )
     parser.add_argument(
@@ -1888,36 +2004,104 @@ def main():
     
     args = parser.parse_args()
     
-    # Handle log file option
-    log_file = None if args.log_file.lower() == 'none' else args.log_file
+    # Check if interactive mode or no arguments provided
+    use_interactive = args.interactive
+    if not use_interactive:
+        # Check if minimal arguments provided (just check a few key ones)
+        has_args = any([
+            args.documents is not None,
+            args.openai,
+            args.openrouter,
+            args.model is not None,
+            args.openai_model is not None,
+            args.openrouter_model is not None,
+            args.reindex,
+            args.no_incremental,
+            args.collection is not None,
+            args.log_file is not None,
+            args.use_tokenizer,
+            args.no_tokenizer,
+            args.chunk_size is not None,
+            args.chunk_overlap is not None,
+            args.use_voice_input
+        ])
+        if not has_args:
+            # No arguments provided, show interactive menu
+            use_interactive = True
     
-    # Determine tokenizer usage
-    use_tokenizer = None  # Auto-detect by default
-    if args.use_tokenizer:
-        use_tokenizer = True
-    elif args.no_tokenizer:
-        use_tokenizer = False
+    if use_interactive:
+        config = interactive_menu()
+        # Merge interactive config with any CLI args (CLI args override interactive)
+        documents_path = args.documents if args.documents is not None else config['documents']
+        use_openai = args.openai if args.openai else config['use_openai']
+        use_openrouter = args.openrouter if args.openrouter else config['use_openrouter']
+        ollama_model = args.model if args.model is not None else config['ollama_model']
+        openai_model = args.openai_model if args.openai_model is not None else config['openai_model']
+        openrouter_model = args.openrouter_model if args.openrouter_model is not None else config['openrouter_model']
+        collection_name = args.collection if args.collection is not None else config['collection']
+        log_file = args.log_file if args.log_file is not None else config['log_file']
+        reindex = args.reindex if args.reindex else config['reindex']
+        no_incremental = args.no_incremental if args.no_incremental else config['no_incremental']
+        use_voice_input = args.use_voice_input if args.use_voice_input else config['use_voice_input']
+        
+        # Handle tokenizer
+        if args.use_tokenizer:
+            use_tokenizer = True
+        elif args.no_tokenizer:
+            use_tokenizer = False
+        else:
+            use_tokenizer = config['use_tokenizer']
+        
+        chunk_size = args.chunk_size if args.chunk_size is not None else config['chunk_size']
+        chunk_overlap = args.chunk_overlap if args.chunk_overlap is not None else config['chunk_overlap']
+    else:
+        # Use CLI arguments with defaults
+        documents_path = args.documents if args.documents is not None else "documents"
+        use_openai = args.openai
+        use_openrouter = args.openrouter
+        ollama_model = args.model if args.model is not None else "gemma3:1b"
+        openai_model = args.openai_model if args.openai_model is not None else "gpt-3.5-turbo"
+        openrouter_model = args.openrouter_model if args.openrouter_model is not None else "openai/gpt-3.5-turbo"
+        collection_name = args.collection if args.collection is not None else "default"
+        log_file = args.log_file if args.log_file is not None else ".rag_conversation.log"
+        reindex = args.reindex
+        no_incremental = args.no_incremental
+        use_voice_input = args.use_voice_input
+        
+        # Handle tokenizer
+        if args.use_tokenizer:
+            use_tokenizer = True
+        elif args.no_tokenizer:
+            use_tokenizer = False
+        else:
+            use_tokenizer = None
+        
+        chunk_size = args.chunk_size
+        chunk_overlap = args.chunk_overlap
+    
+    # Handle log file option
+    log_file_final = None if (log_file and log_file.lower() == 'none') else log_file
     
     # Initialize RAG system
     rag = IntegratedRAG(
-        documents_path=args.documents,
-        use_openai=args.openai,
-        use_openrouter=args.openrouter,
-        ollama_model=args.model,
-        openai_model=args.openai_model,
-        openrouter_model=args.openrouter_model,
-        collection_name=args.collection,
-        log_file=log_file,
+        documents_path=documents_path,
+        use_openai=use_openai,
+        use_openrouter=use_openrouter,
+        ollama_model=ollama_model,
+        openai_model=openai_model,
+        openrouter_model=openrouter_model,
+        collection_name=collection_name,
+        log_file=log_file_final,
         use_tokenizer=use_tokenizer,
-        chunk_size=args.chunk_size,
-        chunk_overlap=args.chunk_overlap,
-        use_voice_input=args.use_voice_input
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        use_voice_input=use_voice_input
     )
     
     # Index documents
     rag.index_documents(
-        force_reindex=args.reindex,
-        incremental=not args.no_incremental
+        force_reindex=reindex,
+        incremental=not no_incremental
     )
     
     # Setup QA chain
