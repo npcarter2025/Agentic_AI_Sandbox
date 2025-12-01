@@ -901,6 +901,63 @@ class IntegratedRAG:
         self.llm = llm  # Store LLM for fallback
         print("✅ QA chain ready")
     
+    def _extract_file_references(self, question: str) -> List[Path]:
+        """
+        Extract file references from a question.
+        Looks for file paths, filenames, or phrases like "this file", "the file", etc.
+        Returns list of file paths that exist.
+        """
+        file_refs = []
+        
+        # Look for file paths (absolute or relative)
+        # Pattern: words that look like file paths (contain / or .ext)
+        path_pattern = r'[\w/\.-]+\.(?:sv|svh|v|vh|vhd|vhdl|py|ts|tsx|js|jsx|cpp|c|h|hpp|java|go|rs|rb|php|swift|kt|scala|sh|yaml|yml|json|xml|html|css|sql|pl|pm|tcl|mk|cmake|lef|def|spef|sdc|lib|sdf|sp|spice|cir|cdl|upf|cpf|gds|gds2|txt|md|rst)'
+        matches = re.findall(path_pattern, question, re.IGNORECASE)
+        
+        for match in matches:
+            # Try as relative path from current directory
+            file_path = Path(match)
+            if file_path.exists():
+                file_refs.append(file_path)
+            else:
+                # Try in documents directory
+                doc_path = self.documents_path / match if self.documents_path.is_dir() else None
+                if doc_path and doc_path.exists():
+                    file_refs.append(doc_path)
+                else:
+                    # Try just the filename in current directory
+                    filename_only = Path(match).name
+                    if Path(filename_only).exists():
+                        file_refs.append(Path(filename_only))
+                    # Try in documents directory
+                    elif self.documents_path.is_dir():
+                        doc_file = self.documents_path / filename_only
+                        if doc_file.exists():
+                            file_refs.append(doc_file)
+        
+        # Look for phrases like "this file", "the file", "that file" and check for recently created files
+        # This is a simple heuristic - could be enhanced
+        if any(phrase in question.lower() for phrase in ["this file", "that file", "the file", "for this", "for that"]):
+            # Check current directory for recently created .sv files (or other common extensions)
+            current_dir = Path(".")
+            for ext in ['.sv', '.v', '.py', '.ts', '.js', '.cpp', '.c']:
+                for file_path in current_dir.glob(f"*{ext}"):
+                    if file_path.is_file() and file_path not in file_refs:
+                        file_refs.append(file_path)
+                        break  # Just get one for "this file"
+                if file_refs:
+                    break
+        
+        return list(set(file_refs))  # Remove duplicates
+    
+    def _read_file_content(self, file_path: Path) -> Optional[str]:
+        """Read file content if it exists."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception:
+            return None
+    
     def ask(self, question: str, filter_metadata: Optional[Dict] = None) -> str:
         """
         Ask a question and get an answer with retry logic and metadata filtering.
@@ -911,6 +968,23 @@ class IntegratedRAG:
         """
         if not self.qa_chain:
             return "❌ QA chain not set up. Please index documents first."
+        
+        # Check for file references in the question
+        file_refs = self._extract_file_references(question)
+        enhanced_question = question
+        
+        # If files are referenced, include their content in the question
+        if file_refs:
+            file_contents = []
+            for file_path in file_refs:
+                content = self._read_file_content(file_path)
+                if content:
+                    language = self.get_language_from_extension(file_path)
+                    file_contents.append(f"\n\n--- Content of {file_path.name} ({language}) ---\n{content}\n--- End of {file_path.name} ---")
+            
+            if file_contents:
+                enhanced_question = question + "\n\n" + "\n".join(file_contents)
+                print(f"   📄 Including content from: {', '.join([f.name for f in file_refs])}")
         
         # Apply metadata filter if provided
         if filter_metadata and self.vectorstore:
@@ -931,7 +1005,7 @@ class IntegratedRAG:
                     provider = "OpenRouter" if self.use_openrouter else "OpenAI"
                     print(f"   🔄 Querying {provider} API (searching documents + generating answer)...")
                 
-                result = self.qa_chain.invoke({"question": question})
+                result = self.qa_chain.invoke({"question": enhanced_question})
                 answer = result["answer"]
                 
                 # Restore original retriever if we changed it
@@ -1042,6 +1116,84 @@ Please answer the user's question using the current date/time information provid
         pattern = r'```(\w+)?\n(.*?)```'
         matches = re.findall(pattern, text, re.DOTALL)
         return [(lang.strip() if lang else '', code.strip()) for lang, code in matches]
+    
+    def _get_filename_from_user(self, default_filename: str, code_lang: str) -> Optional[str]:
+        """
+        Ask user for a filename, with a default suggestion.
+        Returns the filename (with extension) or None if cancelled.
+        """
+        lang_to_ext = {
+            'python': '.py',
+            'typescript': '.ts',
+            'javascript': '.js',
+            'cpp': '.cpp',
+            'c': '.c',
+            'java': '.java',
+            'go': '.go',
+            'rust': '.rs',
+            'ruby': '.rb',
+            'php': '.php',
+            'swift': '.swift',
+            'kotlin': '.kt',
+            'scala': '.scala',
+            'bash': '.sh',
+            'yaml': '.yaml',
+            'json': '.json',
+            'html': '.html',
+            'css': '.css',
+            'sql': '.sql',
+            'systemverilog': '.sv',
+            'verilog': '.v',
+            'vhdl': '.vhd',
+            'perl': '.pl',
+            'tcl': '.tcl',
+            'makefile': 'Makefile',
+            'cmake': 'CMakeLists.txt',
+            'lef': '.lef',
+            'def': '.def',
+            'spef': '.spef',
+            'sdc': '.sdc',
+            'lib': '.lib',
+            'sdf': '.sdf',
+            'spice': '.sp',
+            'cdl': '.cdl',
+            'upf': '.upf',
+            'cpf': '.cpf',
+        }
+        default_ext = lang_to_ext.get(code_lang.lower(), '.txt')
+        
+        # Ensure default filename has the correct extension
+        if not default_filename.endswith(default_ext) and default_ext not in ['Makefile', 'CMakeLists.txt']:
+            # Remove any existing extension and add the correct one
+            default_filename = Path(default_filename).stem + default_ext
+        
+        print(f"\n📝 Enter filename (default: {default_filename}, or 'cancel' to cancel): ", end="")
+        user_input = input().strip()
+        
+        if not user_input:
+            # User pressed Enter, use default
+            return default_filename
+        
+        # Check for cancel
+        if user_input.lower() in ['cancel', 'c', 'q', 'quit']:
+            return None
+        
+        # User provided a custom name
+        filename = user_input
+        
+        # If user didn't provide extension, add the default one
+        if not any(filename.endswith(ext) for ext in lang_to_ext.values()):
+            # Check if it looks like they want no extension (special cases)
+            if code_lang.lower() in ['makefile', 'cmake']:
+                # For Makefile/CMakeLists, don't add extension if user didn't provide one
+                pass
+            else:
+                filename += default_ext
+        
+        # Validate filename (remove invalid characters)
+        filename = re.sub(r'[<>:"|?*]', '_', filename)
+        
+        return filename
     
     def edit_file_inline(self, file_path: Path, instruction: str) -> Tuple[bool, str]:
         """
@@ -1462,79 +1614,102 @@ Do not include explanations. Only return the code block."""
                     
                     if code:
                         print(f"\n💡 Found {code_lang} code block. What would you like to do?")
-                        print("   [s] Save to file")
-                        print("   [d] Display code only (don't save)")
+                        print("   [s] Save to file (current directory)")
+                        print("   [d] Save to documents directory (will be indexed)")
+                        print("   [p] Display code only (don't save)")
                         print("   [n] Nothing (skip)")
                         
                         while True:
-                            choice = input("\nYour choice (s/d/n): ").strip().lower()
+                            choice = input("\nYour choice (s/d/p/n): ").strip().lower()
                             
                             if choice == 's' or choice == 'save':
-                                # Determine file extension from language
-                                lang_to_ext = {
-                                    'python': '.py',
-                                    'typescript': '.ts',
-                                    'javascript': '.js',
-                                    'cpp': '.cpp',
-                                    'c': '.c',
-                                    'java': '.java',
-                                    'go': '.go',
-                                    'rust': '.rs',
-                                    'ruby': '.rb',
-                                    'php': '.php',
-                                    'swift': '.swift',
-                                    'kotlin': '.kt',
-                                    'scala': '.scala',
-                                    'bash': '.sh',
-                                    'yaml': '.yaml',
-                                    'json': '.json',
-                                    'html': '.html',
-                                    'css': '.css',
-                                    'sql': '.sql',
-                                    'systemverilog': '.sv',
-                                    'verilog': '.v',
-                                    'vhdl': '.vhd',
-                                    'perl': '.pl',
-                                    'tcl': '.tcl',
-                                    # Build systems
-                                    'makefile': 'Makefile',
-                                    'cmake': 'CMakeLists.txt',
-                                    # ASIC Physical Design
-                                    'lef': '.lef',
-                                    'def': '.def',
-                                    'spef': '.spef',
-                                    'sdc': '.sdc',
-                                    'lib': '.lib',
-                                    'sdf': '.sdf',
-                                    'spice': '.sp',
-                                    'cdl': '.cdl',
-                                    'upf': '.upf',
-                                    'cpf': '.cpf',
-                                }
-                                ext = lang_to_ext.get(code_lang.lower(), '.txt')
+                                # Generate default filename
+                                default_filename = re.sub(r'[^\w\s-]', '', question.lower())
+                                default_filename = re.sub(r'[-\s]+', '_', default_filename)
+                                default_filename = default_filename[:30]
+                                if not default_filename:
+                                    default_filename = "generated_code"
                                 
-                                filename = re.sub(r'[^\w\s-]', '', question.lower())
-                                filename = re.sub(r'[-\s]+', '_', filename)
-                                filename = filename[:30]
+                                # Ask user for filename
+                                filename = self._get_filename_from_user(default_filename, code_lang)
+                                
                                 if not filename:
-                                    filename = "generated_code"
-                                filename += ext
+                                    print("❌ Filename cancelled.\n")
+                                    break
                                 
                                 try:
                                     output_path = Path(".")
                                     file_path = output_path / filename
                                     
                                     if file_path.exists():
-                                        print(f"⚠️  File '{file_path}' already exists. Not overwriting.\n")
-                                    else:
-                                        with open(file_path, 'w', encoding='utf-8') as f:
-                                            f.write(code)
-                                        print(f"✅ Created file: {file_path}\n")
+                                        overwrite = input(f"⚠️  File '{file_path}' already exists. Overwrite? [y/n]: ").strip().lower()
+                                        if overwrite != 'y' and overwrite != 'yes':
+                                            print("❌ File not saved.\n")
+                                            break
+                                    
+                                    with open(file_path, 'w', encoding='utf-8') as f:
+                                        f.write(code)
+                                    print(f"✅ Created file: {file_path}\n")
                                 except Exception as e:
                                     print(f"❌ Error creating file: {e}\n")
                                 break
                             
-                            elif choice == 'd' or choice == 'display':
+                            elif choice == 'd' or choice == 'documents':
+                                # Generate default filename
+                                default_filename = re.sub(r'[^\w\s-]', '', question.lower())
+                                default_filename = re.sub(r'[-\s]+', '_', default_filename)
+                                default_filename = default_filename[:30]
+                                if not default_filename:
+                                    default_filename = "generated_code"
+                                
+                                # Ask user for filename
+                                filename = self._get_filename_from_user(default_filename, code_lang)
+                                
+                                if not filename:
+                                    print("❌ Filename cancelled.\n")
+                                    break
+                                
+                                try:
+                                    if not self.documents_path.is_dir():
+                                        self.documents_path.mkdir(parents=True, exist_ok=True)
+                                    
+                                    file_path = self.documents_path / filename
+                                    
+                                    if file_path.exists():
+                                        overwrite = input(f"⚠️  File '{file_path}' already exists. Overwrite? [y/n]: ").strip().lower()
+                                        if overwrite != 'y' and overwrite != 'yes':
+                                            print("❌ File not saved.\n")
+                                            break
+                                    
+                                    with open(file_path, 'w', encoding='utf-8') as f:
+                                        f.write(code)
+                                    print(f"✅ Created file: {file_path}")
+                                    
+                                    # Auto-index the new file
+                                    if self.vectorstore:
+                                        print("   🔄 Auto-indexing file...")
+                                        try:
+                                            language = self.get_language_from_extension(file_path)
+                                            if language == 'python':
+                                                chunks = self.parse_python_file(file_path, code)
+                                            else:
+                                                chunks = self.parse_code_file(file_path, code)
+                                            
+                                            if chunks:
+                                                self.vectorstore.add_documents(chunks)
+                                                # Update file hash
+                                                self.file_hashes[str(file_path)] = self.get_file_hash(file_path)
+                                                self.save_file_hashes()
+                                                print(f"   ✅ File indexed and ready to use!\n")
+                                            else:
+                                                print(f"   ⚠️  Could not create chunks for indexing\n")
+                                        except Exception as e:
+                                            print(f"   ⚠️  Could not auto-index file: {e}\n")
+                                except Exception as e:
+                                    print(f"❌ Error creating file: {e}\n")
+                                break
+                            
+                            elif choice == 'p' or choice == 'display' or choice == 'print':
                                 print(f"\n📝 Code:\n```{code_lang}")
                                 print(code)
                                 print("```\n")
@@ -1545,7 +1720,7 @@ Do not include explanations. Only return the code block."""
                                 break
                             
                             else:
-                                print("❌ Invalid choice. Please enter 's', 'd', or 'n'.")
+                                print("❌ Invalid choice. Please enter 's' (save to current dir), 'd' (save to documents), 'p' (print), or 'n' (skip).")
                 
                 print()
                 
