@@ -9,7 +9,7 @@ langchain-classic>=0.1.0
 langchain-core>=0.2.0
 
 # Speech Recognition (for voice input mode)
-vosk>=0.3.45
+vosk>=0.3.44
 sounddevice>=0.4.6
 pynput>=1.7.6
 
@@ -23,4 +23,8 @@ python-dotenv>=1.0.0
 # Optional but recommended for better performance
 numpy>=1.24.0
 sentence-transformers>=2.2.0  # Used by HuggingFaceEmbeddings
+
+# GUI Framework
+PyQt6>=6.6.0
+PyQt6-QScintilla>=2.14.0
 

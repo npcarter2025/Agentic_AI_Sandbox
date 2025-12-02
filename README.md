@@ -18,6 +18,14 @@ I am also planning a LangGraph Multi-Agent system, coming soon.
   - Supports Python, TypeScript, JavaScript, C/C++, SystemVerilog, Verilog, VHDL, and many more
   - Multiple LLM providers (Ollama, OpenAI, OpenRouter)
 
+### GUI Chat Interface (NEW!)
+- **Sandbox Editor** - Modern GUI chat interface for code editing
+  - Located in `src/sandbox_editor/`
+  - PyQt6-based chat interface
+  - VS Code integration for inline diffs
+  - See [RAG_EDITOR_README.md](RAG_EDITOR_README.md) for details
+  - Run with: `python -m sandbox_editor.main` or `sandbox-editor`
+
 
 ### Speech-to-Text Tools
 - **Speech_to_English_Txt_Spacebar.py** - Spacebar-controlled speech-to-text using Vosk ASR
