@@ -1,0 +1,2 @@
+"""VS Code integration components."""
+
